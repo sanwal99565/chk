@@ -41,33 +41,68 @@ async def handle_manual_login(client, message):
     global received_code, received_password
     
     text = message.text.strip()
-    print(f"📨 Received: {text}")
+    print(f"📨 Received from user: {text}")
     
     # Check for 5-digit code
     if text.isdigit() and len(text) == 5:
         received_code = text
-        await message.reply(f"✅ Code **{text}** received! Processing login...")
+        await message.reply(f"✅ **Code {text} received!**\n\nProcessing login...")
         code_event.set()
     
     # Check for password
     elif len(text) > 3 and not text.isdigit():
         received_password = text
-        await message.reply("✅ Password received! Completing login...")
+        await message.reply("✅ **Password received!**\n\nCompleting login...")
         password_event.set()
     
     else:
-        await message.reply("❌ Please send:\n• 5-digit code\n• Or password")
+        await message.reply(
+            "🤖 **Login Assistant**\n\n"
+            "Please send:\n"
+            "• 🔢 5-digit confirmation code\n"
+            "• Or 🔐 your 2FA password\n\n"
+            "You'll receive the code on Telegram app shortly."
+        )
+
+@bot.on_message(filters.command("start") & filters.private)
+async def start_command(client, message):
+    """Handle /start command"""
+    await message.reply(
+        "🚀 **Telegram Login Assistant**\n\n"
+        "I'll help you login to your account.\n\n"
+        "📱 **Steps:**\n"
+        "1. You'll receive a 5-digit code\n"
+        "2. Send that code here\n"
+        "3. If asked, send your 2FA password\n\n"
+        "⏳ Waiting for code request..."
+    )
+    print(f"✅ User {message.from_user.id} started the bot")
 
 async def manual_login_process():
     """Manual login with bot assistance"""
     print("🚀 MANUAL LOGIN PROCESS STARTED")
-    print("📱 Please check Telegram for code")
+    print("=" * 50)
     
     # Start bot
     await bot.start()
     bot_user = await bot.get_me()
-    print(f"🤖 Bot ready: @{bot_user.username}")
-    print("💬 Send code to the bot when you receive it")
+    print(f"🤖 Bot started: @{bot_user.username}")
+    print("💬 Bot is ready to receive codes")
+    print("=" * 50)
+    
+    # Send welcome message to bot's saved messages
+    try:
+        await bot.send_message(
+            "me",  # Saved messages
+            f"🤖 **Bot Started Successfully!**\n\n"
+            f"Username: @{bot_user.username}\n"
+            f"Phone: {PHONE_NUMBER}\n\n"
+            f"✅ Ready to receive login codes\n"
+            f"📱 Check your Telegram app for code"
+        )
+        print("✅ Welcome message sent to saved messages")
+    except Exception as e:
+        print(f"⚠️ Could not send welcome message: {e}")
     
     # User client
     user_client = Client("user_account", api_id=API_ID, api_hash=API_HASH)
@@ -75,19 +110,38 @@ async def manual_login_process():
     try:
         # Step 1: Request code
         await user_client.connect()
-        print("📲 Sending code request...")
+        print("📲 Sending code request to Telegram...")
         code_info = await user_client.send_code(PHONE_NUMBER)
         print("✅ Code sent to Telegram!")
         
+        # Notify via bot
+        try:
+            await bot.send_message(
+                "me",
+                "📱 **Code Sent!**\n\n"
+                "Check your Telegram app for 5-digit code.\n"
+                "Send that code to this bot."
+            )
+        except:
+            pass
+        
         # Step 2: Wait for code via bot
-        print("⏳ Waiting for code...")
-        await code_event.wait()
+        print("⏳ Waiting for code from user...")
+        print("💡 Check Telegram app and send code to bot")
+        
+        # Wait with timeout (5 minutes)
+        try:
+            await asyncio.wait_for(code_event.wait(), timeout=300)
+        except asyncio.TimeoutError:
+            print("❌ Timeout: No code received in 5 minutes")
+            await bot.send_message("me", "❌ Timeout: No code received")
+            return None
         
         if not received_code:
             print("❌ No code received")
             return None
             
-        print(f"🔐 Using code: {received_code}")
+        print(f"🔐 Code received: {received_code}")
         
         # Step 3: Sign in
         try:
@@ -98,12 +152,18 @@ async def manual_login_process():
             )
             print("✅ Login successful!")
             
-        except SessionPasswordNeeded:
-            print("🔑 Password required")
-            await bot.send_message("me", "🔑 Please send your 2FA password:")
+            await bot.send_message("me", "🎉 **Login Successful!**\n\nStarting monitor...")
             
-            # Wait for password
-            await password_event.wait()
+        except SessionPasswordNeeded:
+            print("🔑 2FA password required")
+            await bot.send_message("me", "🔑 **2FA Required**\n\nPlease send your password:")
+            
+            # Wait for password with timeout (3 minutes)
+            try:
+                await asyncio.wait_for(password_event.wait(), timeout=180)
+            except asyncio.TimeoutError:
+                print("❌ Timeout: No password received")
+                return None
             
             if not received_password:
                 print("❌ No password received")
@@ -111,11 +171,16 @@ async def manual_login_process():
                 
             await user_client.check_password(received_password)
             print("✅ Password accepted!")
+            await bot.send_message("me", "✅ **Password Verified!**\n\nStarting monitor...")
         
         return user_client
         
     except Exception as e:
         print(f"❌ Login error: {e}")
+        try:
+            await bot.send_message("me", f"❌ **Login Failed**\n\nError: {str(e)}")
+        except:
+            pass
         return None
 
 class FileStorage:
@@ -257,7 +322,7 @@ async def process_source_channel(client, channel_id):
 
 async def main():
     print("=" * 50)
-    print("🚀 TELEGRAM MONITOR - MANUAL LOGIN")
+    print("🚀 TELEGRAM MONITOR - BOT LOGIN SYSTEM")
     print("=" * 50)
     print(f"📱 Phone: {PHONE_NUMBER}")
     print(f"🎯 Target: {TARGET_GROUP}")
@@ -269,7 +334,7 @@ async def main():
     user_client = await manual_login_process()
     
     if not user_client:
-        print("❌ Login failed")
+        print("❌ Login failed. Exiting.")
         await bot.stop()
         return
     
@@ -281,6 +346,7 @@ async def main():
         
         # Stop bot
         await bot.stop()
+        print("🤖 Bot stopped")
         
         print("📊 Posted: 0 | Pinned: 0")
         
@@ -292,7 +358,7 @@ async def main():
             await process_source_channel(user_client, channel_id)
         
         print(f"\n✅ Ready | Posted: {posted_count} | Pinned: {pinned_count}")
-        print("🔍 Monitoring...")
+        print("🔍 Monitoring for new messages...")
         
         # Message handler
         @user_client.on_message(filters.chat(SOURCE_CHANNELS))
