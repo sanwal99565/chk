@@ -217,23 +217,30 @@ To create a Telegram session, send your details in this format:
             user_client = Client(session_name, api_id=api_id, api_hash=api_hash)
             await user_client.connect()
             
-            # ✅ FIXED: Pyrogram v2.0 compatible - is_authorized use karo
-            if not await user_client.is_authorized():
-                # Send verification code
-                sent_code = await user_client.send_code(phone)
-                user_state['phone_code_hash'] = sent_code.phone_code_hash
-                user_state['client'] = user_client
-                user_state['step'] = 'waiting_code'
-                
-                await self.client.send_message(
-                    user_id, 
-                    "📲 **Verification code sent!**\n\nPlease enter the code you received:"
-                )
-                logger.info(f"Waiting for code from user {user_id}")
+            # ✅ FIXED: Pyrogram v2.0 compatible - Directly try to get_me() se check karo
+            try:
+                # Try to get user info - agar authorized hai toh yeh kaam karega
+                me = await user_client.get_me()
+                # Agar yahan tak pahunche matlab authorized hai
+                logger.info(f"User already authorized: {me.first_name}")
+                await self.save_session(user_id, phone, session_name, user_client)
                 return
+                
+            except Exception:
+                # Agar get_me() fail hua matlab sign in karna hoga
+                logger.info("User not authorized, sending verification code...")
             
-            # If already authorized, save session
-            await self.save_session(user_id, phone, session_name, user_client)
+            # Send verification code
+            sent_code = await user_client.send_code(phone)
+            user_state['phone_code_hash'] = sent_code.phone_code_hash
+            user_state['client'] = user_client
+            user_state['step'] = 'waiting_code'
+            
+            await self.client.send_message(
+                user_id, 
+                "📲 **Verification code sent!**\n\nPlease enter the code you received:"
+            )
+            logger.info(f"Waiting for code from user {user_id}")
             
         except Exception as e:
             logger.error(f"Session creation error: {e}")
