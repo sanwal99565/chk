@@ -59,7 +59,14 @@ class SessionBot:
         """Start the Telegram bot"""
         try:
             logger.info("Creating Telegram client...")
-            self.client = Client('session_bot', api_id=API_ID, api_hash=API_HASH)
+            
+            # Bot client with bot_token in constructor
+            self.client = Client(
+                'session_bot', 
+                api_id=API_ID, 
+                api_hash=API_HASH,
+                bot_token=BOT_TOKEN  # Bot token yahan add karo
+            )
             
             # Event handlers
             @self.client.on_message(filters.command("start") & filters.private)
@@ -129,7 +136,9 @@ To create a Telegram session, send your details in this format:
                     await message.reply("❌ An error occurred. Please try again.")
             
             logger.info("Starting bot...")
-            await self.client.start(bot_token=BOT_TOKEN)
+            
+            # Start without bot_token parameter
+            await self.client.start()
             
             me = await self.client.get_me()
             logger.info(f"Bot started successfully: @{me.username}")
