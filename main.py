@@ -10,7 +10,7 @@ from pyrogram.types import Message
 # Environment variables
 API_ID = int(os.environ['API_ID'])
 API_HASH = os.environ['API_HASH']
-BOT_TOKEN = os.environ['BOT_TOKEN']  # Bot for receiving codes
+BOT_TOKEN = os.environ['BOT_TOKEN']
 PHONE_NUMBER = os.environ['PHONE_NUMBER']
 TARGET_GROUP = os.environ['TARGET_GROUP']
 
@@ -26,58 +26,77 @@ PROCESSED_FILE = 'processed_messages.json'
 posted_count = 0
 pinned_count = 0
 
-# Store for user inputs
-user_data = {}
+# Global variables for login
+login_code = None
+login_password = None
+login_event = asyncio.Event()
 
-# Bot for receiving codes
-bot_app = Client("code_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Bot client
+bot = Client("login_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# User client (with bot help for login)
-user_app = Client(
-    "user_session", 
-    api_id=API_ID, 
-    api_hash=API_HASH,
-    phone_number=PHONE_NUMBER
-)
-
-@bot_app.on_message(filters.private)
-async def handle_private_message(client, message):
-    """Bot ko code/password receive karega"""
+@bot.on_message(filters.private)
+async def handle_login_code(client, message):
+    global login_code, login_password
+    
     text = message.text.strip()
+    print(f"📨 Received from user: {text}")
     
-    if message.from_user.id not in user_data:
-        user_data[message.from_user.id] = {'stage': 'waiting'}
-    
-    # Check if it's confirmation code (5 digits)
+    # Check if it's a 5-digit confirmation code
     if text.isdigit() and len(text) == 5:
-        print(f"📱 Confirmation code received: {text}")
-        user_data[message.from_user.id]['code'] = text
-        await message.reply("✅ Code received! Processing login...")
-        
+        login_code = text
+        await message.reply("✅ Confirmation code received! Processing login...")
+        login_event.set()
+    
     # Check if it's password
     elif len(text) > 3:
-        print(f"🔑 Password received: {text}")
-        user_data[message.from_user.id]['password'] = text
+        login_password = text
         await message.reply("✅ Password received! Completing login...")
+        login_event.set()
     
     else:
-        await message.reply("❌ Invalid input. Send 5-digit code or password.")
+        await message.reply("❌ Please send:\n• 5-digit confirmation code\n• Or your 2FA password")
 
-async def login_with_bot_help():
-    """Bot se code/password leke login karega"""
-    print("🔐 Waiting for login code via bot...")
+async def create_user_client():
+    """User client banaye with custom password handler"""
     
-    # Start bot to receive codes
-    await bot_app.start()
-    print("🤖 Bot started for code reception")
+    class CustomClient(Client):
+        async def authorize(self):
+            # Bot start karo code receive karne ke liye
+            await bot.start()
+            bot_me = await bot.get_me()
+            print(f"🤖 Bot @{bot_me.username} ready for login codes")
+            print("💬 Send confirmation code to the bot")
+            
+            # Wait for code
+            global login_code
+            login_event.clear()
+            await login_event.wait()
+            
+            if login_code:
+                return await self.sign_in(phone_number=self.phone_number, phone_code=login_code)
+            
+            return None
+        
+        async def check_password(self):
+            # Wait for password
+            global login_password
+            login_event.clear()
+            await login_event.wait()
+            
+            if login_password:
+                return await self.sign_in(phone_number=self.phone_number, password=login_password)
+            
+            return None
     
-    # Try to start user client (will ask for code)
-    try:
-        await user_app.start()
-        return True
-    except Exception as e:
-        print(f"Login error: {e}")
-        return False
+    # Custom client banaye
+    client = CustomClient(
+        "user_session",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        phone_number=PHONE_NUMBER
+    )
+    
+    return client
 
 class FileStorage:
     @staticmethod
@@ -226,29 +245,27 @@ async def process_source_channel(client, channel_id):
 
 async def main():
     print("=" * 50)
-    print("🚀 TELEGRAM MONITOR WITH BOT LOGIN HELP")
+    print("🚀 TELEGRAM MONITOR WITH BOT LOGIN")
     print("=" * 50)
     print(f"📱 Phone: {PHONE_NUMBER}")
-    print(f"🤖 Bot: @{BOT_TOKEN.split(':')[0]}_bot")
     print(f"🎯 Target: {TARGET_GROUP}")
     print("=" * 50)
     
-    # Step 1: Login with bot help
-    success = await login_with_bot_help()
-    if not success:
-        print("❌ Login failed")
-        return
-    
-    print("✅ User logged in successfully!")
-    
     init_storage()
     
-    # Stop bot (no longer needed)
-    await bot_app.stop()
+    # Custom client banaye
+    user_app = await create_user_client()
     
-    async with user_app:
+    try:
+        # Start user client (bot automatically start hoga)
+        await user_app.start()
+        print("✅ User logged in successfully!")
+        
         me = await user_app.get_me()
         print(f"👤 User: {me.first_name}")
+        
+        # Bot stop karo (ab zaroorat nahi)
+        await bot.stop()
         
         print("📊 Posted: 0 | Pinned: 0")
         
@@ -266,6 +283,11 @@ async def main():
         while True:
             await asyncio.sleep(3600)
             print("💚 Still monitoring...")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    finally:
+        await user_app.stop()
 
 if __name__ == '__main__':
     try:
@@ -273,4 +295,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print(f"\n🛑 Stopped | Posted: {posted_count} | Pinned: {pinned_count}")
     except Exception as e:
-        print(f"💥 Error: {e}")
+        print(f"💥 Fatal error: {e}")
