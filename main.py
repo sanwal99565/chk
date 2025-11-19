@@ -6,10 +6,11 @@ import sys
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import SessionPasswordNeeded
 
 # Environment variables
 API_ID = int(os.environ['API_ID'])
-API_HASH = os.environ['API_HASH']
+API_HASH = os.environ['API_HASH'])
 BOT_TOKEN = os.environ['BOT_TOKEN']
 PHONE_NUMBER = os.environ['PHONE_NUMBER']
 TARGET_GROUP = os.environ['TARGET_GROUP']
@@ -26,77 +27,112 @@ PROCESSED_FILE = 'processed_messages.json'
 posted_count = 0
 pinned_count = 0
 
-# Global variables for login
-login_code = None
-login_password = None
-login_event = asyncio.Event()
+# Login management
+login_data = {
+    'code': None,
+    'password': None,
+    'code_event': asyncio.Event(),
+    'password_event': asyncio.Event()
+}
 
-# Bot client
-bot = Client("login_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Bot for login assistance
+bot_app = Client("login_helper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-@bot.on_message(filters.private)
-async def handle_login_code(client, message):
-    global login_code, login_password
-    
+@bot_app.on_message(filters.private)
+async def handle_login_input(client, message):
+    """Bot ko code/password receive karega"""
     text = message.text.strip()
-    print(f"📨 Received from user: {text}")
+    user_id = message.from_user.id
     
-    # Check if it's a 5-digit confirmation code
-    if text.isdigit() and len(text) == 5:
-        login_code = text
+    print(f"📨 Received from user {user_id}: {text}")
+    
+    # Check for confirmation code (5-6 digits)
+    if text.isdigit() and 5 <= len(text) <= 6:
+        login_data['code'] = text
         await message.reply("✅ Confirmation code received! Processing login...")
-        login_event.set()
+        login_data['code_event'].set()
     
-    # Check if it's password
-    elif len(text) > 3:
-        login_password = text
+    # Check for password
+    elif len(text) >= 4:
+        login_data['password'] = text
         await message.reply("✅ Password received! Completing login...")
-        login_event.set()
+        login_data['password_event'].set()
     
     else:
-        await message.reply("❌ Please send:\n• 5-digit confirmation code\n• Or your 2FA password")
+        await message.reply("❌ Please send:\n• 5-6 digit confirmation code\n• Or your 2FA password")
 
-async def create_user_client():
-    """User client banaye with custom password handler"""
+async def send_code_request():
+    """Bot se code request bheje"""
+    bot_me = await bot_app.get_me()
+    print("=" * 60)
+    print("🔐 LOGIN REQUIRED - BOT ASSISTANCE")
+    print("=" * 60)
+    print(f"🤖 Send confirmation code to: @{bot_me.username}")
+    print("📱 You will receive code via Telegram app")
+    print("💬 Forward that code to the bot")
+    print("=" * 60)
+
+async def login_with_bot_assistance():
+    """Bot ki help se login kare"""
     
-    class CustomClient(Client):
-        async def authorize(self):
-            # Bot start karo code receive karne ke liye
-            await bot.start()
-            bot_me = await bot.get_me()
-            print(f"🤖 Bot @{bot_me.username} ready for login codes")
-            print("💬 Send confirmation code to the bot")
-            
-            # Wait for code
-            global login_code
-            login_event.clear()
-            await login_event.wait()
-            
-            if login_code:
-                return await self.sign_in(phone_number=self.phone_number, phone_code=login_code)
-            
+    # Start bot first
+    await bot_app.start()
+    print("✅ Bot started for login assistance")
+    
+    # Send code request message
+    await send_code_request()
+    
+    # Create user client
+    user_app = Client("user_session", api_id=API_ID, api_hash=API_HASH)
+    
+    try:
+        # Step 1: Send code request
+        await user_app.connect()
+        sent_code = await user_app.send_code(PHONE_NUMBER)
+        print("📲 Code request sent to Telegram")
+        
+        # Step 2: Wait for code via bot
+        print("⏳ Waiting for confirmation code via bot...")
+        login_data['code_event'].clear()
+        await login_data['code_event'].wait()
+        
+        if not login_data['code']:
+            print("❌ No code received")
             return None
         
-        async def check_password(self):
-            # Wait for password
-            global login_password
-            login_event.clear()
-            await login_event.wait()
+        print(f"🔢 Code received: {login_data['code']}")
+        
+        # Step 3: Sign in with code
+        try:
+            await user_app.sign_in(
+                phone_number=PHONE_NUMBER,
+                phone_code_hash=sent_code.phone_code_hash,
+                phone_code=login_data['code']
+            )
+            print("✅ Signed in successfully!")
             
-            if login_password:
-                return await self.sign_in(phone_number=self.phone_number, password=login_password)
+        except SessionPasswordNeeded:
+            print("🔐 2FA Password required")
             
-            return None
-    
-    # Custom client banaye
-    client = CustomClient(
-        "user_session",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        phone_number=PHONE_NUMBER
-    )
-    
-    return client
+            # Step 4: Wait for password via bot
+            login_data['password_event'].clear()
+            await login_data['password_event'].wait()
+            
+            if not login_data['password']:
+                print("❌ No password received")
+                return None
+            
+            # Step 5: Sign in with password
+            await user_app.check_password(login_data['password'])
+            print("✅ 2FA authentication successful!")
+        
+        # Return the authorized client
+        return user_app
+        
+    except Exception as e:
+        print(f"❌ Login failed: {e}")
+        await user_app.disconnect()
+        return None
 
 class FileStorage:
     @staticmethod
@@ -245,7 +281,7 @@ async def process_source_channel(client, channel_id):
 
 async def main():
     print("=" * 50)
-    print("🚀 TELEGRAM MONITOR WITH BOT LOGIN")
+    print("🚀 TELEGRAM MONITOR - BOT LOGIN SYSTEM")
     print("=" * 50)
     print(f"📱 Phone: {PHONE_NUMBER}")
     print(f"🎯 Target: {TARGET_GROUP}")
@@ -253,19 +289,23 @@ async def main():
     
     init_storage()
     
-    # Custom client banaye
-    user_app = await create_user_client()
+    # Login with bot assistance
+    user_app = await login_with_bot_assistance()
+    
+    if not user_app:
+        print("❌ Login failed. Exiting.")
+        await bot_app.stop()
+        return
     
     try:
-        # Start user client (bot automatically start hoga)
-        await user_app.start()
-        print("✅ User logged in successfully!")
+        print("✅ Login successful! Starting monitor...")
         
         me = await user_app.get_me()
-        print(f"👤 User: {me.first_name}")
+        print(f"👤 User: {me.first_name} (@{me.username})")
         
-        # Bot stop karo (ab zaroorat nahi)
-        await bot.stop()
+        # Stop bot (no longer needed)
+        await bot_app.stop()
+        print("🤖 Bot stopped")
         
         print("📊 Posted: 0 | Pinned: 0")
         
@@ -287,7 +327,7 @@ async def main():
     except Exception as e:
         print(f"❌ Error: {e}")
     finally:
-        await user_app.stop()
+        await user_app.disconnect()
 
 if __name__ == '__main__':
     try:
