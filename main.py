@@ -12,9 +12,9 @@ from pyrogram.errors import SessionPasswordNeeded
 
 # Environment variables
 API_ID = int(os.environ['API_ID'])
-API_HASH = os.environ['API_HASH']
-BOT_TOKEN = os.environ['BOT_TOKEN']
-TARGET_GROUP = os.environ['TARGET_GROUP']
+API_HASH = os.environ['API_HASH'])
+BOT_TOKEN = os.environ['BOT_TOKEN'])
+TARGET_GROUP = os.environ['TARGET_GROUP'])
 
 SOURCE_CHANNELS = [
     int(os.environ['CHANNEL_1']),
@@ -65,7 +65,7 @@ class SessionBot:
                 'session_bot', 
                 api_id=API_ID, 
                 api_hash=API_HASH,
-                bot_token=BOT_TOKEN  # Bot token yahan add karo
+                bot_token=BOT_TOKEN
             )
             
             # Event handlers
@@ -137,19 +137,14 @@ To create a Telegram session, send your details in this format:
             
             logger.info("Starting bot...")
             
-            # Start without bot_token parameter
+            # Start the client
             await self.client.start()
             
             me = await self.client.get_me()
             logger.info(f"Bot started successfully: @{me.username}")
             
-            # Send startup message
-            await self.client.send_message(
-                "me",
-                f"🤖 **Bot Started Successfully!**\n\n"
-                f"Username: @{me.username}\n"
-                f"Ready to create user sessions."
-            )
+            # ✅ FIXED: Startup message ko remove kar diya
+            logger.info(f"Bot @{me.username} is now running and ready to receive commands")
             
             # Keep bot running
             await self.client.run_until_disconnected()
