@@ -6,7 +6,7 @@ import sys
 import sqlite3
 import logging
 from datetime import datetime
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 from pyrogram.errors import SessionPasswordNeeded
 
@@ -146,11 +146,15 @@ To create a Telegram session, send your details in this format:
             # ✅ FIXED: Startup message ko remove kar diya
             logger.info(f"Bot @{me.username} is now running and ready to receive commands")
             
-            # Keep bot running
-            await self.client.run_until_disconnected()
+            # ✅ FIXED: Pyrogram v2.0 mein idle() use karo
+            await idle()
             
         except Exception as e:
             logger.error(f"Failed to start bot: {e}")
+        finally:
+            # Cleanup
+            if hasattr(self, 'client'):
+                await self.client.stop()
     
     async def handle_credentials(self, client, message, parts, user_id):
         """Handle user credentials and start session creation"""
@@ -526,8 +530,8 @@ To create a Telegram session, send your details in this format:
                     self.mark_message_processed(signature, cc, result)
                     await asyncio.sleep(NEXT_POST_DELAY)
             
-            # Keep monitoring running
-            await user_client.run_until_disconnected()
+            # ✅ FIXED: Pyrogram v2.0 compatible
+            await idle()
             
         except Exception as e:
             logger.error(f"Monitoring error: {e}")
