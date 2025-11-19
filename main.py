@@ -6,32 +6,11 @@ import sys
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message
-import time
 
-# Check environment variables first
-def check_environment():
-    required_vars = ['API_ID', 'API_HASH', 'PHONE_NUMBER', 'TARGET_GROUP', 'CHANNEL_1', 'CHANNEL_2']
-    missing_vars = []
-    
-    for var in required_vars:
-        if var not in os.environ:
-            missing_vars.append(var)
-    
-    if missing_vars:
-        print("❌ MISSING ENVIRONMENT VARIABLES:")
-        for var in missing_vars:
-            print(f"   - {var}")
-        print("\n💡 Railway pe yeh variables set karo:")
-        print("   API_ID, API_HASH, PHONE_NUMBER, TARGET_GROUP, CHANNEL_1, CHANNEL_2")
-        sys.exit(1)
-
-# Check environment before anything
-check_environment()
-
-# Now safely get environment variables
+# Environment variables - BOT TOKEN use karo
 API_ID = int(os.environ['API_ID'])
-API_HASH = os.environ['API_HASH'] 
-PHONE_NUMBER = os.environ['PHONE_NUMBER']
+API_HASH = os.environ['API_HASH']
+BOT_TOKEN = os.environ['BOT_TOKEN']  # Bot token from @BotFather
 TARGET_GROUP = os.environ['TARGET_GROUP']
 
 SOURCE_CHANNELS = [
@@ -39,14 +18,10 @@ SOURCE_CHANNELS = [
     int(os.environ['CHANNEL_2'])
 ]
 
-# Settings with defaults
 WAIT_FOR_REPLY = int(os.environ.get('WAIT_FOR_REPLY', '15'))
 NEXT_POST_DELAY = int(os.environ.get('NEXT_POST_DELAY', '10'))
 
-# File-based storage
 PROCESSED_FILE = 'processed_messages.json'
-
-# Counters
 posted_count = 0
 pinned_count = 0
 
@@ -77,12 +52,9 @@ def init_storage():
 def extract_cc_details(text):
     if not text:
         return None
-    
     cc_pattern = r'\b(\d{16}\|\d{2}\|\d{2}\|\d{3})\b'
     match = re.search(cc_pattern, text)
-    if match:
-        return match.group(1)
-    return None
+    return match.group(1) if match else None
 
 def is_message_processed(message_signature):
     processed = FileStorage.load_json(PROCESSED_FILE)
@@ -198,12 +170,12 @@ async def process_source_channel(client, channel_id):
         print(f"❌ Channel error: {e}")
         return False
 
-# Pyrogram Client
+# BOT CLIENT - No login required!
 app = Client(
-    "telegram_session",
+    "telegram_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    phone_number=PHONE_NUMBER
+    bot_token=BOT_TOKEN  # Bot token se directly login
 )
 
 @app.on_message(filters.chat(SOURCE_CHANNELS))
@@ -225,9 +197,9 @@ async def handle_new_message(client, message):
 
 async def main():
     print("=" * 50)
-    print("🚀 TELEGRAM MONITOR STARTING...")
+    print("🚀 TELEGRAM BOT MONITOR STARTING...")
     print("=" * 50)
-    print(f"📱 Phone: {PHONE_NUMBER}")
+    print(f"🤖 Bot Token: {BOT_TOKEN[:10]}...")
     print(f"🎯 Target: {TARGET_GROUP}")
     print(f"📡 Channels: {len(SOURCE_CHANNELS)}")
     print("=" * 50)
@@ -235,13 +207,13 @@ async def main():
     init_storage()
     
     async with app:
-        print("✅ Logged in successfully!")
+        print("✅ Bot logged in successfully!")
         me = await app.get_me()
-        print(f"👤 User: {me.first_name}")
+        print(f"🤖 Bot: @{me.username}")
         
         print("📊 Posted: 0 | Pinned: 0")
         
-        # Cleanup group
+        # Cleanup group (bot needs admin rights)
         await cleanup_group_messages(app)
         
         # Process existing messages
