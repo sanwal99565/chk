@@ -10,7 +10,6 @@ from pyrogram.types import Message
 # Environment variables
 API_ID = int(os.environ['API_ID'])
 API_HASH = os.environ['API_HASH'])
-SESSION_STRING = os.environ['SESSION_STRING']  # Session string from local
 TARGET_GROUP = os.environ['TARGET_GROUP']
 
 SOURCE_CHANNELS = [
@@ -22,6 +21,7 @@ WAIT_FOR_REPLY = int(os.environ.get('WAIT_FOR_REPLY', '15'))
 NEXT_POST_DELAY = int(os.environ.get('NEXT_POST_DELAY', '10'))
 
 PROCESSED_FILE = 'processed_messages.json'
+SESSION_FILE = 'user_session.session'  # GitHub pe uploaded file
 posted_count = 0
 pinned_count = 0
 
@@ -170,13 +170,8 @@ async def process_source_channel(client, channel_id):
         print(f"❌ Channel error: {e}")
         return False
 
-# Direct session string se client - NO LOGIN REQUIRED!
-app = Client(
-    "user_session", 
-    api_id=API_ID, 
-    api_hash=API_HASH, 
-    session_string=SESSION_STRING
-)
+# Session file se client - NO LOGIN REQUIRED!
+app = Client(SESSION_FILE, api_id=API_ID, api_hash=API_HASH)
 
 @app.on_message(filters.chat(SOURCE_CHANNELS))
 async def handle_new_message(client, message):
@@ -197,23 +192,24 @@ async def handle_new_message(client, message):
 
 async def main():
     print("=" * 50)
-    print("🚀 TELEGRAM MONITOR - DIRECT SESSION")
+    print("🚀 TELEGRAM MONITOR - SESSION FILE")
     print("=" * 50)
-    print("✅ No login required - using pre-authorized session")
+    
+    # Check if session file exists
+    if not os.path.exists(SESSION_FILE):
+        print(f"❌ Session file '{SESSION_FILE}' not found!")
+        print("💡 Please upload user_session.session to GitHub")
+        return
+    
+    print("✅ Session file found - no login required")
     print(f"🎯 Target: {TARGET_GROUP}")
     print(f"📡 Channels: {len(SOURCE_CHANNELS)}")
     print("=" * 50)
     
-    # Verify session string
-    if not SESSION_STRING or SESSION_STRING == "YOUR_SESSION_STRING_HERE":
-        print("❌ ERROR: SESSION_STRING not set in environment variables")
-        print("💡 Please add your session string to Railway variables")
-        return
-    
     init_storage()
     
     async with app:
-        print("✅ Connected via session string!")
+        print("✅ Connected via session file!")
         me = await app.get_me()
         print(f"👤 User: {me.first_name} (@{me.username})")
         
