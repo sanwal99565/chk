@@ -10,6 +10,7 @@ from pyrogram.types import Message
 # Environment variables
 API_ID = int(os.environ['API_ID'])
 API_HASH = os.environ['API_HASH']
+SESSION_STRING = os.environ['SESSION_STRING']  # Session string from environment
 TARGET_GROUP = os.environ['TARGET_GROUP']
 
 SOURCE_CHANNELS = [
@@ -21,7 +22,6 @@ WAIT_FOR_REPLY = int(os.environ.get('WAIT_FOR_REPLY', '15'))
 NEXT_POST_DELAY = int(os.environ.get('NEXT_POST_DELAY', '10'))
 
 PROCESSED_FILE = 'processed_messages.json'
-SESSION_FILE = 'user_session.session'  # GitHub pe uploaded file
 posted_count = 0
 pinned_count = 0
 
@@ -170,8 +170,13 @@ async def process_source_channel(client, channel_id):
         print(f"❌ Channel error: {e}")
         return False
 
-# Session file se client - NO LOGIN REQUIRED!
-app = Client(SESSION_FILE, api_id=API_ID, api_hash=API_HASH)
+# Session string se client - BILKUL NO LOGIN!
+app = Client(
+    "user_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING
+)
 
 @app.on_message(filters.chat(SOURCE_CHANNELS))
 async def handle_new_message(client, message):
@@ -192,16 +197,15 @@ async def handle_new_message(client, message):
 
 async def main():
     print("=" * 50)
-    print("🚀 TELEGRAM MONITOR - SESSION FILE")
+    print("🚀 TELEGRAM MONITOR - SESSION STRING")
     print("=" * 50)
     
-    # Check if session file exists
-    if not os.path.exists(SESSION_FILE):
-        print(f"❌ Session file '{SESSION_FILE}' not found!")
-        print("💡 Please upload user_session.session to GitHub")
+    # Check session string
+    if not SESSION_STRING:
+        print("❌ SESSION_STRING not found in environment variables")
         return
     
-    print("✅ Session file found - no login required")
+    print("✅ Using session string - no login required")
     print(f"🎯 Target: {TARGET_GROUP}")
     print(f"📡 Channels: {len(SOURCE_CHANNELS)}")
     print("=" * 50)
@@ -209,7 +213,7 @@ async def main():
     init_storage()
     
     async with app:
-        print("✅ Connected via session file!")
+        print("✅ Connected successfully!")
         me = await app.get_me()
         print(f"👤 User: {me.first_name} (@{me.username})")
         
