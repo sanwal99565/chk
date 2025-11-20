@@ -513,7 +513,8 @@ class SessionBot:
             session_path = self.get_session_path(session_file_base)
 
             # Create Telethon client for user session
-            user_client = TelegramClient(session_path, api_id, api_hash)
+            # Ensure api_id is int and api_hash is str
+            user_client = TelegramClient(str(session_path), int(api_id), str(api_hash))
             await user_client.connect()
 
             # Send verification code
@@ -843,7 +844,8 @@ class SessionBot:
             session_path = self.get_session_path(session_file)
 
             # Create Telethon client with persistent path
-            telethon_client = TelegramClient(session_path, api_id, api_hash)
+            # Ensure api_id is int and api_hash is str
+            telethon_client = TelegramClient(str(session_path), int(api_id), str(api_hash))
             await telethon_client.start()
 
             me = await telethon_client.get_me()
