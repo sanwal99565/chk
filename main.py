@@ -22,12 +22,20 @@ BOT_TOKEN = os.environ['BOT_TOKEN']
 DEFAULT_WAIT_FOR_REPLY = int(os.environ.get('WAIT_FOR_REPLY', '5'))
 DEFAULT_NEXT_POST_DELAY = int(os.environ.get('NEXT_POST_DELAY', '2'))
 
+# Persistent data directory for Railway deployment
+# Railway's filesystem is ephemeral, so we use /app/data with volume mount
+# For local development, use current directory
+DATA_DIR = os.environ.get('DATA_DIR', '/app/data')
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+logger.info(f"Using data directory: {DATA_DIR}")
 
 class SessionBot:
     def __init__(self):
@@ -37,13 +45,17 @@ class SessionBot:
 
     def setup_database(self):
         """Setup SQLite database for storing user sessions and processed messages"""
-        self.conn = sqlite3.connect('bot_database.db', check_same_thread=False)
+        db_path = os.path.join(DATA_DIR, 'bot_database.db')
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
+        logger.info(f"Database connected at: {db_path}")
         
-        # Users table - stores user credentials and session info
+        # Sessions table - supports multiple accounts per user
         self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                session_name TEXT UNIQUE,
                 api_id INTEGER,
                 api_hash TEXT,
                 phone TEXT,
@@ -53,6 +65,7 @@ class SessionBot:
                 checker_bot TEXT,
                 wait_for_reply INTEGER DEFAULT 5,
                 next_post_delay INTEGER DEFAULT 2,
+                is_active INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -61,34 +74,55 @@ class SessionBot:
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS processed_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
+                session_id INTEGER,
                 message_signature TEXT UNIQUE,
                 cc_details TEXT,
                 status TEXT,
                 pinned INTEGER DEFAULT 0,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id)
             )
         ''')
         
-        # Stats table
+        # Stats table - per session stats
         self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_stats (
-                user_id INTEGER PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS session_stats (
+                session_id INTEGER PRIMARY KEY,
                 posted_count INTEGER DEFAULT 0,
                 pinned_count INTEGER DEFAULT 0,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id)
             )
         ''')
         
         self.conn.commit()
         logger.info("Database setup completed")
 
+    def get_active_session(self, user_id):
+        """Get active session for a user"""
+        self.cursor.execute('''
+            SELECT session_id, session_name, api_id, api_hash, phone, session_file, 
+                   target_group, source_channels, checker_bot, wait_for_reply, next_post_delay
+            FROM sessions 
+            WHERE user_id = ? AND is_active = 1
+        ''', (user_id,))
+        return self.cursor.fetchone()
+
+    def get_session_by_name(self, user_id, session_name):
+        """Get session by name for a user"""
+        self.cursor.execute('''
+            SELECT session_id, session_name, api_id, api_hash, phone, session_file,
+                   target_group, source_channels, checker_bot, wait_for_reply, next_post_delay
+            FROM sessions 
+            WHERE user_id = ? AND session_name = ?
+        ''', (user_id, session_name))
+        return self.cursor.fetchone()
+
     async def start_bot(self):
         """Start the Telegram bot"""
         try:
             logger.info("Creating Telegram bot client...")
-            self.client = Client('session_bot', api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+            bot_session_path = os.path.join(DATA_DIR, 'session_bot')
+            self.client = Client(bot_session_path, api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
             # Event handlers
             @self.client.on_message(filters.command("start") & filters.private)
@@ -96,22 +130,27 @@ class SessionBot:
                 welcome_msg = """
 🤖 **Welcome to Multi-Account CC Monitor Bot!**
 
-**Step 1: Create Session**
+**✨ Now supports MULTIPLE ACCOUNTS! ✨**
+
+**Step 1: Add Account (Session)**
 Send your details in this format:
-`API_ID API_HASH PHONE_NUMBER`
+`SESSION_NAME API_ID API_HASH PHONE_NUMBER`
 
 **Example:**
-`123456 abc123def456 +919876543210`
+`account1 123456 abc123def456 +919876543210`
+`account2 654321 xyz789abc123 +919999999999`
 
-**Step 2: Configure Monitoring**
-After session creation, use:
-`/config TARGET_GROUP SOURCE_CHANNEL1 SOURCE_CHANNEL2 CHECKER_BOT`
+**Step 2: Manage Sessions**
+• `/sessions` - View all your accounts
+• `/switch SESSION_NAME` - Switch active account
+• `/delete SESSION_NAME` - Delete an account
 
-**Example:**
-`/config @mygroup -1001234567 -1009876543 @CheckerBot`
+**Step 3: Configure Active Account**
+`/config TARGET_GROUP SOURCE_CH1 SOURCE_CH2 CHECKER_BOT`
 
-**Step 3: Start Monitoring**
-`/monitor`
+**Step 4: Start Monitoring**
+`/monitor` - Start monitoring with active account
+`/stop` - Stop monitoring
 
 🔒 *All data is stored securely in database*
                 """
@@ -125,15 +164,20 @@ After session creation, use:
 
 1. Go to https://my.telegram.org
 2. Create an app and get API_ID & API_HASH
-3. Send: `API_ID API_HASH PHONE_NUMBER`
+3. Send: `SESSION_NAME API_ID API_HASH PHONE_NUMBER`
 4. Follow verification steps
-5. Configure with `/config`
-6. Start monitoring with `/monitor`
+5. Use `/sessions` to view accounts
+6. Use `/switch SESSION_NAME` to activate
+7. Configure with `/config`
+8. Start monitoring with `/monitor`
 
 **Commands:**
 /start - Start bot
 /help - Show help
-/config - Configure monitoring
+/sessions - View all accounts
+/switch - Switch active account
+/delete - Delete an account
+/config - Configure active account
 /monitor - Start monitoring
 /stop - Stop monitoring
 /stats - View stats
@@ -144,7 +188,7 @@ After session creation, use:
 
             @self.client.on_message(filters.command("config") & filters.private)
             async def config_handler(client, message):
-                """Configure monitoring settings"""
+                """Configure monitoring settings for active session"""
                 try:
                     user_id = message.from_user.id
                     parts = message.text.split()[1:]  # Skip /config
@@ -153,6 +197,15 @@ After session creation, use:
                         await message.reply("❌ **Invalid format!**\n\nUse:\n`/config TARGET_GROUP SOURCE_CH1 SOURCE_CH2 CHECKER_BOT`\n\nExample:\n`/config @mygroup -1001234567 -1009876543 @CheckerBot`")
                         return
                     
+                    # Get active session
+                    active_session = self.get_active_session(user_id)
+                    if not active_session:
+                        await message.reply("❌ **No active session!**\n\nUse `/sessions` to view accounts\nUse `/switch SESSION_NAME` to activate one")
+                        return
+                    
+                    session_id = active_session[0]
+                    session_name = active_session[1]
+                    
                     target_group = parts[0]
                     source_ch1 = parts[1]
                     source_ch2 = parts[2]
@@ -160,16 +213,16 @@ After session creation, use:
                     
                     source_channels = f"{source_ch1},{source_ch2}"
                     
-                    # Update or insert config
+                    # Update config for active session
                     self.cursor.execute('''
-                        UPDATE users 
+                        UPDATE sessions 
                         SET target_group = ?, source_channels = ?, checker_bot = ?
-                        WHERE user_id = ?
-                    ''', (target_group, source_channels, checker_bot, user_id))
+                        WHERE session_id = ?
+                    ''', (target_group, source_channels, checker_bot, session_id))
                     self.conn.commit()
                     
                     await message.reply(f"""
-✅ **Configuration Saved!**
+✅ **Configuration Saved for '{session_name}'!**
 
 🎯 Target Group: `{target_group}`
 📡 Source Channels: `{source_ch1}`, `{source_ch2}`
@@ -184,44 +237,70 @@ Now use `/monitor` to start!
 
             @self.client.on_message(filters.command("monitor") & filters.private)
             async def monitor_handler(client, message):
-                """Start monitoring after session creation"""
+                """Start monitoring with active session"""
                 user_id = message.from_user.id
                 
-                # Check if user exists and has config
-                self.cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-                user_data = self.cursor.fetchone()
-                
-                if not user_data:
-                    await message.reply("❌ **No session found!**\n\nCreate session first with:\n`API_ID API_HASH PHONE_NUMBER`")
+                # Get active session
+                active_session = self.get_active_session(user_id)
+                if not active_session:
+                    await message.reply("❌ **No active session!**\n\nUse `/sessions` to view accounts\nUse `/switch SESSION_NAME` to activate one")
                     return
                 
-                if not user_data[5] or not user_data[6]:  # target_group and source_channels
+                session_id, session_name, api_id, api_hash, phone, session_file, target_group, source_channels, checker_bot, wait_for_reply, next_post_delay = active_session
+                
+                if not target_group or not source_channels:
                     await message.reply("❌ **Configuration missing!**\n\nPlease configure with `/config` first")
                     return
                 
-                session_file = f"user_{user_id}"
-                if not os.path.exists(session_file + '.session'):
+                # session_file already includes .session extension
+                session_path = os.path.join(DATA_DIR, session_file)
+                if not os.path.exists(session_path):
                     await message.reply("❌ **Session file not found!**\n\nPlease recreate your session")
                     return
                 
-                await message.reply("✅ **Starting Monitor...**")
-                await self.start_monitoring(user_id)
+                await message.reply(f"✅ **Starting Monitor for '{session_name}'...**")
+                await self.start_monitoring(session_id)
 
             @self.client.on_message(filters.command("stop") & filters.private)
             async def stop_handler(client, message):
-                """Stop monitoring"""
+                """Stop monitoring for active session"""
                 user_id = message.from_user.id
-                if user_id in self.monitoring_clients:
-                    await message.reply("🛑 **Stopping monitor...**")
-                    # Stop will be handled by the monitoring loop
+                
+                # Get active session
+                active_session = self.get_active_session(user_id)
+                if not active_session:
+                    await message.reply("❌ **No active session!**")
+                    return
+                
+                session_id = active_session[0]
+                session_name = active_session[1]
+                
+                if session_id in self.monitoring_clients:
+                    client_to_stop = self.monitoring_clients[session_id]
+                    try:
+                        await client_to_stop.disconnect()
+                        del self.monitoring_clients[session_id]
+                        await message.reply(f"🛑 **Monitoring stopped for '{session_name}'!**")
+                    except Exception as e:
+                        await message.reply(f"❌ **Error stopping monitor:** `{str(e)}`")
                 else:
-                    await message.reply("❌ **No active monitoring found**")
+                    await message.reply(f"❌ **No active monitoring for '{session_name}'**")
 
             @self.client.on_message(filters.command("stats") & filters.private)
             async def stats_handler(client, message):
-                """Show user stats"""
+                """Show stats for active session"""
                 user_id = message.from_user.id
-                self.cursor.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
+                
+                # Get active session
+                self.cursor.execute('SELECT session_id FROM sessions WHERE user_id = ? AND is_active = 1', (user_id,))
+                active = self.cursor.fetchone()
+                
+                if not active:
+                    await message.reply("❌ **No active session!**\n\nUse `/sessions` to view and `/switch` to activate")
+                    return
+                
+                session_id = active[0]
+                self.cursor.execute('SELECT * FROM session_stats WHERE session_id = ?', (session_id,))
                 stats = self.cursor.fetchone()
                 
                 if stats:
@@ -233,6 +312,94 @@ Now use `/monitor` to start!
                     """)
                 else:
                     await message.reply("📊 **No stats yet!**\n\nStart monitoring to collect stats")
+
+            @self.client.on_message(filters.command("sessions") & filters.private)
+            async def sessions_handler(client, message):
+                """List all sessions for user"""
+                user_id = message.from_user.id
+                
+                self.cursor.execute('SELECT session_id, session_name, phone, is_active FROM sessions WHERE user_id = ?', (user_id,))
+                sessions = self.cursor.fetchall()
+                
+                if not sessions:
+                    await message.reply("❌ **No sessions found!**\n\nAdd a new account:\n`SESSION_NAME API_ID API_HASH PHONE_NUMBER`")
+                    return
+                
+                msg = "📱 **Your Accounts:**\n\n"
+                for session in sessions:
+                    session_id, session_name, phone, is_active = session
+                    status = "✅ Active" if is_active else "⚪ Inactive"
+                    msg += f"{status} **{session_name}** - {phone}\n"
+                
+                msg += "\n💡 Use `/switch SESSION_NAME` to activate an account"
+                await message.reply(msg)
+
+            @self.client.on_message(filters.command("switch") & filters.private)
+            async def switch_handler(client, message):
+                """Switch active session"""
+                user_id = message.from_user.id
+                parts = message.text.split()
+                
+                if len(parts) < 2:
+                    await message.reply("❌ **Invalid format!**\n\nUse: `/switch SESSION_NAME`")
+                    return
+                
+                session_name = parts[1]
+                
+                # Check if session exists
+                self.cursor.execute('SELECT session_id FROM sessions WHERE user_id = ? AND session_name = ?', (user_id, session_name))
+                session = self.cursor.fetchone()
+                
+                if not session:
+                    await message.reply(f"❌ **Session '{session_name}' not found!**\n\nUse `/sessions` to view all accounts")
+                    return
+                
+                # Deactivate all sessions for this user
+                self.cursor.execute('UPDATE sessions SET is_active = 0 WHERE user_id = ?', (user_id,))
+                
+                # Activate selected session
+                self.cursor.execute('UPDATE sessions SET is_active = 1 WHERE user_id = ? AND session_name = ?', (user_id, session_name))
+                self.conn.commit()
+                
+                await message.reply(f"✅ **Active account switched to:** `{session_name}`")
+
+            @self.client.on_message(filters.command("delete") & filters.private)
+            async def delete_handler(client, message):
+                """Delete a session"""
+                user_id = message.from_user.id
+                parts = message.text.split()
+                
+                if len(parts) < 2:
+                    await message.reply("❌ **Invalid format!**\n\nUse: `/delete SESSION_NAME`")
+                    return
+                
+                session_name = parts[1]
+                
+                # Check if session exists
+                self.cursor.execute('SELECT session_id, session_file FROM sessions WHERE user_id = ? AND session_name = ?', (user_id, session_name))
+                session = self.cursor.fetchone()
+                
+                if not session:
+                    await message.reply(f"❌ **Session '{session_name}' not found!**")
+                    return
+                
+                session_id, session_file = session
+                
+                # Delete from database
+                self.cursor.execute('DELETE FROM sessions WHERE session_id = ?', (session_id,))
+                self.cursor.execute('DELETE FROM session_stats WHERE session_id = ?', (session_id,))
+                self.cursor.execute('DELETE FROM processed_messages WHERE session_id = ?', (session_id,))
+                self.conn.commit()
+                
+                # Delete session file
+                try:
+                    session_path = os.path.join(DATA_DIR, session_file)
+                    if os.path.exists(session_path):
+                        os.remove(session_path)
+                except:
+                    pass
+                
+                await message.reply(f"✅ **Session '{session_name}' deleted successfully!**")
 
             @self.client.on_message(filters.private & filters.text)
             async def message_handler(client, message):
@@ -248,10 +415,10 @@ Now use `/monitor` to start!
                     # Check if message contains credentials (ignore commands)
                     if not message_text.startswith('/'):
                         parts = message_text.split()
-                        if len(parts) == 3:
+                        if len(parts) == 4:
                             await self.handle_credentials(client, message, parts, user_id)
                         else:
-                            await message.reply("❌ **Invalid format!**\n\nUse: `API_ID API_HASH PHONE_NUMBER`")
+                            await message.reply("❌ **Invalid format!**\n\nUse: `SESSION_NAME API_ID API_HASH PHONE_NUMBER`\n\nExample: `account1 123456 abc123def456 +919876543210`")
 
                 except Exception as e:
                     logger.error(f"Message handler error: {e}")
@@ -273,18 +440,29 @@ Now use `/monitor` to start!
     async def handle_credentials(self, client, message, parts, user_id):
         """Handle user credentials and start session creation"""
         try:
-            api_id, api_hash, phone = parts
+            session_name, api_id, api_hash, phone = parts
+
+            # Validate session_name (alphanumeric only)
+            if not session_name.replace('_', '').isalnum():
+                await message.reply("❌ Session name must be alphanumeric (e.g., account1, my_session)")
+                return
+
+            # Check if session name already exists
+            if self.get_session_by_name(user_id, session_name):
+                await message.reply(f"❌ **Session '{session_name}' already exists!**\n\nUse a different name or delete the existing one with `/delete {session_name}`")
+                return
 
             # Validate API_ID
             if not api_id.isdigit():
                 await message.reply("❌ API_ID must be a number!")
                 return
 
-            await message.reply("⏳ **Processing your request...**")
-            logger.info(f"Creating session for user {user_id}")
+            await message.reply(f"⏳ **Creating session '{session_name}'...**")
+            logger.info(f"Creating session '{session_name}' for user {user_id}")
 
             # Store user state for verification
             self.user_states[user_id] = {
+                'session_name': session_name,
                 'api_id': int(api_id),
                 'api_hash': api_hash,
                 'phone': phone,
@@ -323,26 +501,30 @@ Now use `/monitor` to start!
         """Create Telegram session for user using Telethon"""
         try:
             user_state = self.user_states[user_id]
+            session_name = user_state['session_name']
             api_id = user_state['api_id']
             api_hash = user_state['api_hash']
             phone = user_state['phone']
 
-            session_name = f"user_{user_id}"
+            # Create unique session file path: user_{user_id}_{session_name}
+            session_file_name = f"user_{user_id}_{session_name}"
+            session_path = os.path.join(DATA_DIR, session_file_name)
 
             # Create Telethon client for user session
-            user_client = TelegramClient(session_name, api_id, api_hash)
+            user_client = TelegramClient(session_path, api_id, api_hash)
             await user_client.connect()
 
             # Send verification code
             await user_client.send_code_request(phone)
             user_state['client'] = user_client
+            user_state['session_file_name'] = session_file_name
             user_state['step'] = 'waiting_code'
 
             await self.client.send_message(
                 user_id, 
-                "📲 **Verification code sent!**\n\nPlease enter the code you received:"
+                f"📲 **Verification code sent to {phone}!**\n\nPlease enter the code you received:"
             )
-            logger.info(f"Waiting for code from user {user_id}")
+            logger.info(f"Waiting for code from user {user_id} for session '{session_name}'")
 
         except Exception as e:
             logger.error(f"Session creation error: {e}")
@@ -361,9 +543,7 @@ Now use `/monitor` to start!
             try:
                 # Sign in with code (Telethon)
                 await user_client.sign_in(phone, code)
-
-                session_name = f"user_{user_id}"
-                await self.save_session(user_id, phone, session_name, user_client)
+                await self.save_session(user_id, user_client)
 
             except Exception as two_fa_error:
                 # Check if it's 2FA error
@@ -396,9 +576,7 @@ Now use `/monitor` to start!
 
             # Sign in with password (Telethon)
             await user_client.sign_in(phone, password=password)
-
-            session_name = f"user_{user_id}"
-            await self.save_session(user_id, phone, session_name, user_client)
+            await self.save_session(user_id, user_client)
 
         except Exception as e:
             logger.error(f"Password processing error: {e}")
@@ -409,46 +587,62 @@ Now use `/monitor` to start!
                     await user_state['client'].disconnect()
                 del self.user_states[user_id]
 
-    async def save_session(self, user_id, phone, session_name, user_client):
+    async def save_session(self, user_id, user_client):
         """Save session and notify user"""
         try:
             user_state = self.user_states[user_id]
+            session_name = user_state['session_name']
             api_id = user_state['api_id']
             api_hash = user_state['api_hash']
+            phone = user_state['phone']
+            session_file_name = user_state['session_file_name']
             
             await user_client.disconnect()
 
-            # Save to database
+            # Save to sessions table
             self.cursor.execute('''
-                INSERT OR REPLACE INTO users 
-                (user_id, api_id, api_hash, phone, session_file, wait_for_reply, next_post_delay) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (user_id, api_id, api_hash, phone, f"{session_name}.session", DEFAULT_WAIT_FOR_REPLY, DEFAULT_NEXT_POST_DELAY))
+                INSERT INTO sessions 
+                (user_id, session_name, api_id, api_hash, phone, session_file, wait_for_reply, next_post_delay, is_active) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, session_name, api_id, api_hash, phone, f"{session_file_name}.session", DEFAULT_WAIT_FOR_REPLY, DEFAULT_NEXT_POST_DELAY, 1))
             
-            # Initialize stats
+            session_id = self.cursor.lastrowid
+            
+            # Initialize stats for this session
             self.cursor.execute('''
-                INSERT OR IGNORE INTO user_stats (user_id, posted_count, pinned_count)
+                INSERT INTO session_stats (session_id, posted_count, pinned_count)
                 VALUES (?, 0, 0)
-            ''', (user_id,))
+            ''', (session_id,))
+            
+            # Deactivate other sessions for this user (make this the active one)
+            self.cursor.execute('''
+                UPDATE sessions SET is_active = 0 
+                WHERE user_id = ? AND session_id != ?
+            ''', (user_id, session_id))
             
             self.conn.commit()
 
             # Send success message
             success_msg = f"""
-✅ **Session Created Successfully!**
+✅ **Session '{session_name}' Created Successfully!**
 
 📱 Phone: `{phone}`
-💾 Session File: `{session_name}.session`
-🆔 Your ID: `{user_id}`
+💾 Session ID: `{session_id}`
+🆔 Your User ID: `{user_id}`
 
 🔐 Session saved securely in database.
+✅ This is now your **active session**.
 
 **Next Steps:**
-1. Configure monitoring with `/config`
-2. Start monitoring with `/monitor`
+1. View all sessions: `/sessions`
+2. Configure this account: `/config TARGET_GROUP SOURCE_CH1 SOURCE_CH2 CHECKER_BOT`
+3. Start monitoring: `/monitor`
+
+**Add more accounts anytime:**
+`SESSION_NAME2 API_ID API_HASH PHONE_NUMBER`
             """
             await self.client.send_message(user_id, success_msg)
-            logger.info(f"Session created for user {user_id}")
+            logger.info(f"Session '{session_name}' (ID: {session_id}) created for user {user_id}")
 
             # Cleanup user state
             if user_id in self.user_states:
@@ -472,34 +666,34 @@ Now use `/monitor` to start!
         match = re.search(cc_pattern, text)
         return match.group(1) if match else None
 
-    def is_message_processed(self, user_id, message_signature):
+    def is_message_processed(self, session_id, message_signature):
         """Check if message was already processed - uses database"""
         self.cursor.execute('''
             SELECT id FROM processed_messages 
-            WHERE user_id = ? AND message_signature = ?
-        ''', (user_id, message_signature))
+            WHERE session_id = ? AND message_signature = ?
+        ''', (session_id, message_signature))
         return self.cursor.fetchone() is not None
 
-    def mark_message_processed(self, user_id, message_signature, cc_details, status):
+    def mark_message_processed(self, session_id, message_signature, cc_details, status):
         """Mark message as processed - uses database"""
         try:
             self.cursor.execute('''
                 INSERT OR REPLACE INTO processed_messages 
-                (user_id, message_signature, cc_details, status, pinned, timestamp)
+                (session_id, message_signature, cc_details, status, pinned, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, message_signature, cc_details, status, 1 if status == 'approved' else 0, datetime.now().isoformat()))
+            ''', (session_id, message_signature, cc_details, status, 1 if status == 'approved' else 0, datetime.now().isoformat()))
             self.conn.commit()
         except Exception as e:
             logger.error(f"Error marking message: {e}")
 
-    def update_stats(self, user_id, posted=0, pinned=0):
-        """Update user stats"""
+    def update_stats(self, session_id, posted=0, pinned=0):
+        """Update session stats"""
         try:
             self.cursor.execute('''
-                UPDATE user_stats 
+                UPDATE session_stats 
                 SET posted_count = posted_count + ?, pinned_count = pinned_count + ?
-                WHERE user_id = ?
-            ''', (posted, pinned, user_id))
+                WHERE session_id = ?
+            ''', (posted, pinned, session_id))
             self.conn.commit()
         except Exception as e:
             logger.error(f"Error updating stats: {e}")
@@ -540,14 +734,14 @@ Now use `/monitor` to start!
             logger.error(f"Cleanup error: {e}")
             return False
 
-    async def send_and_wait_for_reply(self, user_id, telethon_client, target_group, cc_details, wait_time):
+    async def send_and_wait_for_reply(self, session_id, telethon_client, target_group, cc_details, wait_time):
         """Send CC to checker bot and wait for response"""
         try:
             # Send message to bot
             sent_message = await telethon_client.send_message(target_group, f"/chk {cc_details}")
-            self.update_stats(user_id, posted=1, pinned=0)
+            self.update_stats(session_id, posted=1, pinned=0)
             
-            logger.info(f"[User {user_id}] Sent: {cc_details}")
+            logger.info(f"[Session {session_id}] Sent: {cc_details}")
 
             # Wait for bot reply
             await asyncio.sleep(wait_time)
@@ -556,7 +750,7 @@ Now use `/monitor` to start!
             async for message in telethon_client.iter_messages(target_group, limit=50):
                 if message.reply_to and message.reply_to.reply_to_msg_id == sent_message.id:
                     message_text = message.text or ""
-                    logger.info(f"[User {user_id}] Bot replied: {message_text[:100]}")
+                    logger.info(f"[Session {session_id}] Bot replied: {message_text[:100]}")
 
                     # APPROVED PATTERNS
                     approved_patterns = [
@@ -574,31 +768,31 @@ Now use `/monitor` to start!
 
                     # Check for approved
                     if any(pattern.lower() in message_text.lower() for pattern in approved_patterns):
-                        logger.info(f"[User {user_id}] APPROVED! Pinning...")
+                        logger.info(f"[Session {session_id}] APPROVED! Pinning...")
                         success = await self.pin_approved_message(telethon_client, target_group, message)
                         if success:
-                            self.update_stats(user_id, posted=0, pinned=1)
+                            self.update_stats(session_id, posted=0, pinned=1)
                             return "approved"
                         return "approved_but_pin_failed"
 
                     # Check for declined
                     elif any(pattern.lower() in message_text.lower() for pattern in declined_patterns):
-                        logger.info(f"[User {user_id}] DECLINED! Deleting...")
+                        logger.info(f"[Session {session_id}] DECLINED! Deleting...")
                         await self.delete_declined_message(message)
                         return "declined"
 
-            logger.info(f"[User {user_id}] No valid reply")
+            logger.info(f"[Session {session_id}] No valid reply")
             return "no_reply"
 
         except Exception as e:
-            logger.error(f"[User {user_id}] Send error: {e}")
+            logger.error(f"[Session {session_id}] Send error: {e}")
             return "error"
 
-    async def process_source_channel(self, user_id, telethon_client, target_group, channel_id, wait_time, delay_time):
+    async def process_source_channel(self, session_id, telethon_client, target_group, channel_id, wait_time, delay_time):
         """Process existing messages in source channel"""
         try:
             message_count = 0
-            logger.info(f"[User {user_id}] Processing channel: {channel_id}")
+            logger.info(f"[Session {session_id}] Processing channel: {channel_id}")
 
             async for message in telethon_client.iter_messages(channel_id, limit=200):
                 text = message.text
@@ -608,63 +802,64 @@ Now use `/monitor` to start!
                 message_signature = f"{channel_id}_{message.id}"
                 cc_details = self.extract_cc_details(text)
 
-                if cc_details and not self.is_message_processed(user_id, message_signature):
-                    logger.info(f"[User {user_id}] Found CC: {cc_details}")
-                    result = await self.send_and_wait_for_reply(user_id, telethon_client, target_group, cc_details, wait_time)
-                    self.mark_message_processed(user_id, message_signature, cc_details, result)
+                if cc_details and not self.is_message_processed(session_id, message_signature):
+                    logger.info(f"[Session {session_id}] Found CC: {cc_details}")
+                    result = await self.send_and_wait_for_reply(session_id, telethon_client, target_group, cc_details, wait_time)
+                    self.mark_message_processed(session_id, message_signature, cc_details, result)
                     await asyncio.sleep(delay_time)
                     message_count += 1
 
-            logger.info(f"[User {user_id}] Channel processed: {message_count} messages")
+            logger.info(f"[Session {session_id}] Channel processed: {message_count} messages")
             return True
 
         except Exception as e:
-            logger.error(f"[User {user_id}] Channel error: {e}")
+            logger.error(f"[Session {session_id}] Channel error: {e}")
             return False
 
-    async def start_monitoring(self, user_id):
-        """Start monitoring channels using Telethon after session creation"""
+    async def start_monitoring(self, session_id):
+        """Start monitoring channels using Telethon for a specific session"""
         try:
-            logger.info(f"Starting monitoring for user {user_id}")
+            logger.info(f"Starting monitoring for session {session_id}")
             
-            # Get user data from database
-            self.cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-            user_data = self.cursor.fetchone()
+            # Get session data from database
+            self.cursor.execute('''
+                SELECT user_id, session_name, api_id, api_hash, phone, session_file, 
+                       target_group, source_channels, checker_bot, wait_for_reply, next_post_delay
+                FROM sessions WHERE session_id = ?
+            ''', (session_id,))
+            session_data = self.cursor.fetchone()
             
-            if not user_data:
-                await self.client.send_message(user_id, "❌ **User data not found!**")
+            if not session_data:
+                logger.error(f"Session {session_id} not found!")
                 return
             
-            api_id = user_data[1]
-            api_hash = user_data[2]
-            session_file = f"user_{user_id}"
-            target_group = user_data[5]
-            source_channels_str = user_data[6]
-            checker_bot = user_data[7]
-            wait_for_reply = user_data[8]
-            next_post_delay = user_data[9]
+            user_id, session_name, api_id, api_hash, phone, session_file, target_group, source_channels_str, checker_bot, wait_for_reply, next_post_delay = session_data
             
             if not source_channels_str:
-                await self.client.send_message(user_id, "❌ **Configure monitoring first with /config**")
+                await self.client.send_message(user_id, f"❌ **Configure '{session_name}' first with /config**")
                 return
             
             source_channels = [int(ch.strip()) if ch.strip().lstrip('-').isdigit() else ch.strip() for ch in source_channels_str.split(',')]
 
-            # Create Telethon client
-            telethon_client = TelegramClient(session_file, api_id, api_hash)
+            # Get session file path (without .session extension as Telethon adds it)
+            session_path = os.path.join(DATA_DIR, session_file.replace('.session', ''))
+
+            # Create Telethon client with persistent path
+            telethon_client = TelegramClient(session_path, api_id, api_hash)
             await telethon_client.start()
 
             me = await telethon_client.get_me()
-            logger.info(f"Monitoring started for: {me.first_name}")
+            logger.info(f"Monitoring started for session '{session_name}': {me.first_name}")
 
-            # Store client
-            self.monitoring_clients[user_id] = telethon_client
+            # Store client with session_id as key
+            self.monitoring_clients[session_id] = telethon_client
 
             # Notify user
             await self.client.send_message(
                 user_id,
-                f"🔍 **Monitoring Started!**\n\n"
+                f"🔍 **Monitoring Started for '{session_name}'!**\n\n"
                 f"👤 User: {me.first_name}\n"
+                f"📱 Phone: {phone}\n"
                 f"🎯 Target: {target_group}\n"
                 f"📡 Channels: {len(source_channels)}\n"
                 f"🤖 Checker: {checker_bot}\n\n"
@@ -672,7 +867,7 @@ Now use `/monitor` to start!
             )
 
             # Initial cleanup
-            logger.info(f"[User {user_id}] Initial cleanup...")
+            logger.info(f"[Session {session_id}] Initial cleanup...")
             await self.cleanup_group_messages(telethon_client, target_group)
 
             # Message handler for new messages
@@ -691,43 +886,44 @@ Now use `/monitor` to start!
                         return
 
                     message_signature = f"{chat_id}_{message.id}"
-                    if self.is_message_processed(user_id, message_signature):
+                    if self.is_message_processed(session_id, message_signature):
                         return
 
                     cc_details = self.extract_cc_details(text)
                     if cc_details:
-                        logger.info(f"[User {user_id}] New CC found: {cc_details}")
-                        result = await self.send_and_wait_for_reply(user_id, telethon_client, target_group, cc_details, wait_for_reply)
-                        self.mark_message_processed(user_id, message_signature, cc_details, result)
+                        logger.info(f"[Session {session_id}] New CC found: {cc_details}")
+                        result = await self.send_and_wait_for_reply(session_id, telethon_client, target_group, cc_details, wait_for_reply)
+                        self.mark_message_processed(session_id, message_signature, cc_details, result)
                         await asyncio.sleep(next_post_delay)
 
                 except Exception as e:
-                    logger.error(f"[User {user_id}] Handler error: {e}")
+                    logger.error(f"[Session {session_id}] Handler error: {e}")
 
             # Process existing messages
             for channel_id in source_channels:
-                await self.process_source_channel(user_id, telethon_client, target_group, channel_id, wait_for_reply, next_post_delay)
+                await self.process_source_channel(session_id, telethon_client, target_group, channel_id, wait_for_reply, next_post_delay)
 
-            logger.info(f"[User {user_id}] Monitoring active")
+            logger.info(f"[Session {session_id}] Monitoring active for '{session_name}'")
             
             # Get current stats
-            self.cursor.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
+            self.cursor.execute('SELECT * FROM session_stats WHERE session_id = ?', (session_id,))
             stats = self.cursor.fetchone()
             if stats:
                 await self.client.send_message(
                     user_id,
-                    f"✅ **Monitoring Active!**\n\n📊 Posted: {stats[1]} | Pinned: {stats[2]}"
+                    f"✅ **Monitoring Active for '{session_name}'!**\n\n📊 Posted: {stats[1]} | Pinned: {stats[2]}"
                 )
 
             # Keep monitoring running
             await asyncio.Event().wait()
 
         except Exception as e:
-            logger.error(f"Monitoring error for user {user_id}: {e}")
-            await self.client.send_message(
-                user_id, 
-                f"❌ **Monitoring failed:** `{str(e)}`"
-            )
+            logger.error(f"Monitoring error for session {session_id}: {e}")
+            if 'user_id' in locals():
+                await self.client.send_message(
+                    user_id, 
+                    f"❌ **Monitoring failed:** `{str(e)}`"
+                )
 
 async def main():
     try:
