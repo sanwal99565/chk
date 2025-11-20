@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: telegram-session-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATA_DIR
+        value: /opt/render/project/src/data
+      - key: WAIT_FOR_REPLY
+        value: 5
+      - key: NEXT_POST_DELAY
+        value: 2
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    disk:
+      name: bot-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
