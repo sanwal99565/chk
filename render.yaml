@@ -13,7 +13,7 @@ services:
       - key: BOT_TOKEN
         sync: false
       - key: DATA_DIR
-        value: /opt/render/project/src/data
+        value: /var/data
       - key: WAIT_FOR_REPLY
         value: 5
       - key: NEXT_POST_DELAY
@@ -22,5 +22,5 @@ services:
         value: 3.11.0
     disk:
       name: bot-data
-      mountPath: /opt/render/project/src/data
+      mountPath: /var/data
       sizeGB: 1
