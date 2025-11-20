@@ -24,12 +24,18 @@ BOT_TOKEN = os.environ['BOT_TOKEN']
 DEFAULT_WAIT_FOR_REPLY = int(os.environ.get('WAIT_FOR_REPLY', '5'))
 DEFAULT_NEXT_POST_DELAY = int(os.environ.get('NEXT_POST_DELAY', '2'))
 
-# Persistent data directory for Railway deployment
-# Railway's filesystem is ephemeral, so we use /app/data with volume mount
-# For local development, use current directory
-DATA_DIR = os.environ.get('DATA_DIR', '/app/data')
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR, exist_ok=True)
+# Persistent data directory for deployment
+# Try multiple locations in order: environment variable, ./data, or current directory
+DATA_DIR = os.environ.get('DATA_DIR', './data')
+
+# Try to create the data directory, fallback to current directory if permission denied
+try:
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR, exist_ok=True)
+except PermissionError:
+    # If we can't create the specified directory, use current directory instead
+    DATA_DIR = '.'
+    logger.warning(f"Permission denied for {os.environ.get('DATA_DIR', './data')}, using current directory instead")
     
 # Setup logging
 logging.basicConfig(
