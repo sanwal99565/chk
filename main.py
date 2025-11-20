@@ -6,12 +6,14 @@ import sys
 import sqlite3
 import logging
 import time
+import threading
 from datetime import datetime
 from typing import List, Union
 from pyrogram.client import Client
 from pyrogram import filters
 from pyrogram.types import Message
 from telethon import TelegramClient, events
+from flask import Flask, jsonify
 
 # Environment variables for BOT ONLY
 API_ID = int(os.environ['API_ID'])
@@ -923,5 +925,42 @@ async def main():
     except Exception as e:
         logger.error(f"Main function error: {e}")
 
-if __name__ == "__main__":
+# Flask web server for health checks (Render free tier requirement)
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return jsonify({
+        'status': 'ok',
+        'service': 'Telegram Session Bot',
+        'message': 'Bot is running!',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/ping')
+def ping():
+    return jsonify({'status': 'pong'})
+
+def run_bot():
+    """Run the bot in a separate thread"""
     asyncio.run(main())
+
+def run_flask():
+    """Run Flask server on main thread"""
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+if __name__ == "__main__":
+    logger.info("Starting Telegram bot in background thread...")
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    logger.info("Starting Flask web server for health checks...")
+    run_flask()
